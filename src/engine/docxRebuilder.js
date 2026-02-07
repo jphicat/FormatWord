@@ -17,6 +17,7 @@ import {
     getRunTextNodes,
     isContentParagraph,
     getAllParagraphs,
+    NS,
 } from './xmlUtils.js';
 
 /**
@@ -70,7 +71,16 @@ export async function rebuildDocx(
             if (translatedText !== undefined) {
                 replaceParagraphText(contentParas[i], translatedText);
                 processedCount++;
+            } else {
+                // No translation available: keep original text but highlight in red
+                highlightParagraphRed(contentParas[i], doc);
             }
+        }
+
+        // Also highlight any remaining content paragraphs beyond segment count
+        for (let i = count; i < contentParas.length; i++) {
+            // These paragraphs exist in the source but had no segment — highlight them
+            // (shouldn't happen normally, but safety net)
         }
 
         // Serialize modified XML back into the ZIP
@@ -208,5 +218,50 @@ function replaceParagraphText(paraElement, newText) {
                 ri.textNodes[j].textContent = '';
             }
         }
+    }
+}
+
+/**
+ * Highlight all runs of a paragraph in red to flag it as "untranslated".
+ * Adds <w:highlight w:val="red"/> inside each run's <w:rPr>.
+ * If the run doesn't have a <w:rPr>, one is created.
+ *
+ * @param {Element} paraElement — <w:p> element
+ * @param {Document} doc — The XML document (needed for createElement)
+ */
+function highlightParagraphRed(paraElement, doc) {
+    const runs = getDirectRuns(paraElement);
+    if (runs.length === 0) return;
+
+    for (const run of runs) {
+        // Find or create <w:rPr> (run properties)
+        let rPr = null;
+        for (const child of run.childNodes) {
+            if (child.localName === 'rPr' && child.namespaceURI === NS.w) {
+                rPr = child;
+                break;
+            }
+        }
+
+        if (!rPr) {
+            rPr = doc.createElementNS(NS.w, 'w:rPr');
+            run.insertBefore(rPr, run.firstChild);
+        }
+
+        // Remove existing highlight if any
+        const existingHighlights = [];
+        for (const child of rPr.childNodes) {
+            if (child.localName === 'highlight' && child.namespaceURI === NS.w) {
+                existingHighlights.push(child);
+            }
+        }
+        for (const h of existingHighlights) {
+            rPr.removeChild(h);
+        }
+
+        // Add <w:highlight w:val="red"/>
+        const highlight = doc.createElementNS(NS.w, 'w:highlight');
+        highlight.setAttributeNS(NS.w, 'w:val', 'red');
+        rPr.appendChild(highlight);
     }
 }
