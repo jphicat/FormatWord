@@ -4,16 +4,19 @@
  * KEY INSIGHT: We don't create a new document. We modify the original XML in-place,
  * only touching <w:t> text content while keeping every XML attribute, style,
  * and binary asset byte-for-byte identical.
+ *
+ * PROFESSIONAL TRANSLATOR APPROACH:
+ * - Segments are matched to paragraphs by INDEX (order), not by text comparison.
+ * - This ensures every content paragraph gets its translation regardless of
+ *   minor parsing differences.
  */
 
 import {
     serializeXml,
     getDirectRuns,
     getRunTextNodes,
-    extractTextFromParagraph,
     isContentParagraph,
     getAllParagraphs,
-    NS,
 } from './xmlUtils.js';
 
 /**
@@ -38,7 +41,7 @@ export async function rebuildDocx(
         message: 'Début de la reconstruction...',
     });
 
-    // Build a quick lookup: xmlPath → list of segments
+    // Build a quick lookup: xmlPath → ordered list of segment IDs
     const segmentsByFile = new Map();
     for (const seg of segments) {
         if (!segmentsByFile.has(seg.xmlPath)) {
@@ -54,26 +57,19 @@ export async function rebuildDocx(
         const fileSegments = segmentsByFile.get(xmlPath);
         if (!fileSegments || fileSegments.length === 0) continue;
 
-        // Get all content paragraphs from the DOM
+        // Get all content paragraphs from the DOM — in the same order as the parser found them
         const allParas = getAllParagraphs(doc.documentElement);
         const contentParas = allParas.filter(isContentParagraph);
 
-        // Match segments to paragraphs by their text content
-        let segIdx = 0;
-        for (const para of contentParas) {
-            if (segIdx >= fileSegments.length) break;
+        // Replace text by index — paragraph i maps to segment i
+        const count = Math.min(contentParas.length, fileSegments.length);
+        for (let i = 0; i < count; i++) {
+            const segment = fileSegments[i];
+            const translatedText = mapping.get(segment.id);
 
-            const paraText = extractTextFromParagraph(para);
-            const segment = fileSegments[segIdx];
-
-            // Verify this paragraph matches our segment
-            if (paraText.trim() === segment.text.trim()) {
-                const translatedText = mapping.get(segment.id);
-                if (translatedText !== undefined) {
-                    replaceParagraphText(para, translatedText);
-                    processedCount++;
-                }
-                segIdx++;
+            if (translatedText !== undefined) {
+                replaceParagraphText(contentParas[i], translatedText);
+                processedCount++;
             }
         }
 
@@ -122,10 +118,10 @@ export async function rebuildDocx(
  * to preserve per-run formatting.
  *
  * Strategy:
- * - If the paragraph has only 1 run: just replace the text.
- * - If multiple runs: distribute the translated text proportionally based on
- *   the original character ratios, so each run keeps its formatting over
- *   a proportional chunk of the translated text.
+ * - If the paragraph has only 1 text run: just replace the text.
+ * - If multiple text runs: distribute the translated text using WORD-BOUNDARY splitting
+ *   proportional to original character ratios. This ensures formatting transitions
+ *   happen at natural word boundaries rather than mid-word.
  *
  * @param {Element} paraElement — <w:p> element
  * @param {string} newText — The full translated text for this paragraph
@@ -155,14 +151,10 @@ function replaceParagraphText(paraElement, newText) {
     if (textRuns.length === 1) {
         // Single run: simple replacement
         const ri = textRuns[0];
-        if (ri.textNodes.length === 1) {
-            ri.textNodes[0].textContent = newText;
-            // Preserve xml:space="preserve" to keep leading/trailing spaces
-            ri.textNodes[0].setAttribute('xml:space', 'preserve');
-        } else if (ri.textNodes.length > 1) {
-            // Put all text in the first <w:t>, clear the rest
+        if (ri.textNodes.length >= 1) {
             ri.textNodes[0].textContent = newText;
             ri.textNodes[0].setAttribute('xml:space', 'preserve');
+            // Clear any extra <w:t> nodes in this run
             for (let i = 1; i < ri.textNodes.length; i++) {
                 ri.textNodes[i].textContent = '';
             }
@@ -170,27 +162,40 @@ function replaceParagraphText(paraElement, newText) {
         return;
     }
 
-    // Multiple runs: distribute text proportionally
-    let remaining = newText;
+    // Multiple runs: distribute text using word-aware proportional splitting
+    const words = newText.split(/(\s+)/); // Split keeping whitespace as separators
+    const totalNewLen = newText.length;
 
+    // Calculate target character lengths for each run based on original proportions
+    const targetLengths = textRuns.map((ri) => {
+        return Math.round((ri.length / totalOriginalLen) * totalNewLen);
+    });
+
+    // Distribute words into runs respecting proportional targets
+    let wordIdx = 0;
     for (let i = 0; i < textRuns.length; i++) {
         const ri = textRuns[i];
         const isLast = i === textRuns.length - 1;
 
-        let chunk;
+        let chunk = '';
         if (isLast) {
-            // Last run gets all remaining text
-            chunk = remaining;
+            // Last run gets all remaining words
+            chunk = words.slice(wordIdx).join('');
         } else {
-            // Proportional split based on original lengths
-            const ratio = ri.length / totalOriginalLen;
-            const chunkLen = Math.round(newText.length * ratio);
-
-            // Try to split at a word boundary near the proportional point
-            chunk = remaining.substring(0, chunkLen);
-            const lastSpace = chunk.lastIndexOf(' ');
-            if (lastSpace > chunkLen * 0.5) {
-                chunk = remaining.substring(0, lastSpace + 1);
+            // Build chunk by adding words until we reach the target length
+            const target = targetLengths[i];
+            while (wordIdx < words.length) {
+                const nextWord = words[wordIdx];
+                if (chunk.length > 0 && chunk.length + nextWord.length > target * 1.3) {
+                    // Don't overshoot too much past the target
+                    break;
+                }
+                chunk += nextWord;
+                wordIdx++;
+                // Stop if we've met or exceeded target and are at a word boundary
+                if (chunk.length >= target && wordIdx < words.length) {
+                    break;
+                }
             }
         }
 
@@ -203,7 +208,5 @@ function replaceParagraphText(paraElement, newText) {
                 ri.textNodes[j].textContent = '';
             }
         }
-
-        remaining = remaining.substring(chunk.length);
     }
 }
