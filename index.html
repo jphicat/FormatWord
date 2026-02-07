@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>FormatWord — Traduction Word pixel-perfect</title>
+  <title>FormatWord — Traduction Word & PowerPoint pixel-perfect</title>
   <meta name="description"
     content="Outil de traduction de documents Word préservant le formatage identique à l'original." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -34,7 +34,7 @@
         </div>
         <h1>Format<span class="accent">Word</span></h1>
       </div>
-      <p class="tagline">Traduction Word • Formatage identique pixel par pixel</p>
+      <p class="tagline">Traduction Word & PowerPoint • Formatage identique pixel par pixel</p>
     </div>
   </header>
 
@@ -45,7 +45,7 @@
       <div class="panel-header">
         <span class="panel-icon">📄</span>
         <h2>Document Source</h2>
-        <span class="badge">.docx</span>
+        <span class="badge">.docx / .pptx</span>
       </div>
       <div class="panel-body">
         <div class="drop-zone" id="dropZoneSource">
@@ -58,9 +58,9 @@
                   stroke-linecap="round" />
               </svg>
             </div>
-            <p class="drop-main-text">Glisser votre fichier <strong>.docx</strong> ici</p>
+            <p class="drop-main-text">Glisser votre fichier <strong>.docx</strong> ou <strong>.pptx</strong> ici</p>
             <p class="drop-sub-text">ou <label for="fileInputSource" class="file-label">parcourir</label></p>
-            <input type="file" id="fileInputSource" accept=".docx" hidden />
+            <input type="file" id="fileInputSource" accept=".docx,.pptx" hidden />
           </div>
           <div class="drop-zone-file" id="sourceFileInfo" style="display:none">
             <div class="file-info-icon">📄</div>
@@ -182,7 +182,7 @@
   <div class="action-bar">
     <button class="btn btn-primary btn-generate" id="btnGenerate" disabled>
       <span class="btn-icon">⚙️</span>
-      <span class="btn-text">Analyser et Générer DOCX</span>
+      <span class="btn-text">Analyser et Générer</span>
       <span class="btn-loader" style="display:none"></span>
     </button>
   </div>

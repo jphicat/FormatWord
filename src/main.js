@@ -8,8 +8,10 @@
  */
 
 import { parseDocx, getDocumentInfo } from './engine/docxParser.js';
+import { parsePptx, getPptxInfo } from './engine/pptxParser.js';
 import { matchTexts, getMatchSummary } from './engine/textMatcher.js';
 import { rebuildDocx } from './engine/docxRebuilder.js';
+import { rebuildPptx } from './engine/pptxRebuilder.js';
 import { saveAs } from 'file-saver';
 
 // ══════════════════════════════════════════════════
@@ -21,6 +23,7 @@ const state = {
     translationText: '',
     generatedBlob: null,
     sourceFileName: '',
+    fileType: '', // 'docx' or 'pptx'
 };
 
 // ══════════════════════════════════════════════════
@@ -146,13 +149,15 @@ function setupDropZone(dropZone, fileInput, onFileAccepted) {
 }
 
 function handleSourceFile(file) {
-    if (!file.name.endsWith('.docx')) {
-        showError('❌ Veuillez sélectionner un fichier .docx');
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (ext !== 'docx' && ext !== 'pptx') {
+        showError('❌ Veuillez sélectionner un fichier .docx ou .pptx');
         return;
     }
 
     state.sourceFile = file;
-    state.sourceFileName = file.name.replace('.docx', '');
+    state.sourceFileName = file.name.replace(/\.(docx|pptx)$/i, '');
+    state.fileType = ext;
 
     // Read as ArrayBuffer
     const reader = new FileReader();
@@ -166,26 +171,50 @@ function handleSourceFile(file) {
         els.sourceFileSize.textContent = formatFileSize(file.size);
         els.dropZoneSource.classList.add('has-file');
 
+        // Update file icon based on type
+        const fileIcon = els.sourceFileInfo.querySelector('.file-info-icon');
+        fileIcon.textContent = ext === 'pptx' ? '📊' : '📄';
+
         // Quick parse to show document info
         try {
-            const { xmlFiles, segments } = await parseDocx(state.sourceBuffer);
-            const info = getDocumentInfo(xmlFiles);
+            if (ext === 'pptx') {
+                const { xmlFiles, segments, slideCount } = await parsePptx(state.sourceBuffer);
+                const info = getPptxInfo(xmlFiles, slideCount);
 
-            els.sourceDocInfoList.innerHTML = '';
-            const items = [
-                `${segments.length} segments de texte`,
-                `${info.paragraphCount} paragraphes dans le corps`,
-                info.hasTables ? '📊 Contient des tableaux' : null,
-                info.hasImages ? '🖼️ Contient des images' : null,
-                info.hasHeaders ? '📑 En-têtes détectés' : null,
-                info.hasFooters ? '📑 Pieds de page détectés' : null,
-                info.hasFootnotes ? '📝 Notes de bas de page' : null,
-            ].filter(Boolean);
+                els.sourceDocInfoList.innerHTML = '';
+                const items = [
+                    `📊 Présentation PowerPoint`,
+                    `${info.slideCount} slides`,
+                    `${segments.length} segments de texte`,
+                    `${info.shapeCount} zones de texte`,
+                ].filter(Boolean);
 
-            for (const item of items) {
-                const li = document.createElement('li');
-                li.textContent = item;
-                els.sourceDocInfoList.appendChild(li);
+                for (const item of items) {
+                    const li = document.createElement('li');
+                    li.textContent = item;
+                    els.sourceDocInfoList.appendChild(li);
+                }
+            } else {
+                const { xmlFiles, segments } = await parseDocx(state.sourceBuffer);
+                const info = getDocumentInfo(xmlFiles);
+
+                els.sourceDocInfoList.innerHTML = '';
+                const items = [
+                    `📄 Document Word`,
+                    `${segments.length} segments de texte`,
+                    `${info.paragraphCount} paragraphes dans le corps`,
+                    info.hasTables ? '📊 Contient des tableaux' : null,
+                    info.hasImages ? '🖼️ Contient des images' : null,
+                    info.hasHeaders ? '📑 En-têtes détectés' : null,
+                    info.hasFooters ? '📑 Pieds de page détectés' : null,
+                    info.hasFootnotes ? '📝 Notes de bas de page' : null,
+                ].filter(Boolean);
+
+                for (const item of items) {
+                    const li = document.createElement('li');
+                    li.textContent = item;
+                    els.sourceDocInfoList.appendChild(li);
+                }
             }
             els.sourceDocInfo.style.display = '';
         } catch (err) {
@@ -201,12 +230,17 @@ function removeSourceFile() {
     state.sourceFile = null;
     state.sourceBuffer = null;
     state.sourceFileName = '';
+    state.fileType = '';
 
     els.dropZoneSource.querySelector('.drop-zone-content').style.display = '';
     els.sourceFileInfo.style.display = 'none';
     els.dropZoneSource.classList.remove('has-file');
     els.sourceDocInfo.style.display = 'none';
     els.fileInputSource.value = '';
+
+    // Reset file icon
+    const fileIcon = els.sourceFileInfo.querySelector('.file-info-icon');
+    fileIcon.textContent = '📄';
 
     updateGenerateButton();
 }
@@ -342,22 +376,42 @@ async function runPipeline() {
     btnIcon.style.display = 'none';
     els.btnGenerate.disabled = true;
 
+    const isPptx = state.fileType === 'pptx';
+    const typeLabel = isPptx ? 'PPTX' : 'DOCX';
+
     try {
         // ── Step 1: Analyze ──
-        setProgressStep('analyze', 10, 'Décompression de l\'archive DOCX...');
-        await sleep(200); // Small delay for UI update
+        setProgressStep('analyze', 10, `Décompression de l'archive ${typeLabel}...`);
+        await sleep(200);
 
-        const { zip, xmlFiles, segments } = await parseDocx(state.sourceBuffer, (p) => {
-            setProgressStep('analyze', 15, p.message);
-        });
+        let zip, xmlFiles, segments, slideCount;
+
+        if (isPptx) {
+            const result = await parsePptx(state.sourceBuffer, (p) => {
+                setProgressStep('analyze', 15, p.message);
+            });
+            zip = result.zip;
+            xmlFiles = result.xmlFiles;
+            segments = result.segments;
+            slideCount = result.slideCount;
+        } else {
+            const result = await parseDocx(state.sourceBuffer, (p) => {
+                setProgressStep('analyze', 15, p.message);
+            });
+            zip = result.zip;
+            xmlFiles = result.xmlFiles;
+            segments = result.segments;
+        }
 
         // ── Step 2: Extract ──
-        setProgressStep('extract', 30, `${segments.length} segments de texte extraits`);
+        if (isPptx) {
+            setProgressStep('extract', 30, `${segments.length} segments extraits de ${slideCount} slides`);
+        } else {
+            setProgressStep('extract', 30, `${segments.length} segments de texte extraits`);
+            const info = getDocumentInfo(xmlFiles);
+            setProgressStep('extract', 40, `Structure analysée : ${info.paragraphCount} paragraphes`);
+        }
         await sleep(300);
-
-        const info = getDocumentInfo(xmlFiles);
-        setProgressStep('extract', 40, `Structure analysée : ${info.paragraphCount} paragraphes`);
-        await sleep(200);
 
         // ── Step 3: Match ──
         setProgressStep('match', 50, 'Alignement du texte source et traduit...');
@@ -385,13 +439,21 @@ async function runPipeline() {
         }
 
         // ── Step 4: Rebuild ──
-        setProgressStep('rebuild', 70, 'Remplacement du texte dans le XML...');
+        setProgressStep('rebuild', 70, `Remplacement du texte dans le ${typeLabel}...`);
         await sleep(200);
 
-        const blob = await rebuildDocx(zip, xmlFiles, segments, mapping, (p) => {
-            const percent = p.step === 'rebuild-zip' ? 85 : 80;
-            setProgressStep('rebuild', percent, p.message);
-        });
+        let blob;
+        if (isPptx) {
+            blob = await rebuildPptx(zip, xmlFiles, segments, mapping, (p) => {
+                const percent = p.step === 'rebuild-zip' ? 85 : 80;
+                setProgressStep('rebuild', percent, p.message);
+            });
+        } else {
+            blob = await rebuildDocx(zip, xmlFiles, segments, mapping, (p) => {
+                const percent = p.step === 'rebuild-zip' ? 85 : 80;
+                setProgressStep('rebuild', percent, p.message);
+            });
+        }
 
         state.generatedBlob = blob;
 
@@ -415,7 +477,7 @@ function resetButton() {
     const btnText = els.btnGenerate.querySelector('.btn-text');
     const btnLoader = els.btnGenerate.querySelector('.btn-loader');
     const btnIcon = els.btnGenerate.querySelector('.btn-icon');
-    btnText.textContent = 'Analyser et Générer DOCX';
+    btnText.textContent = 'Analyser et Générer';
     btnLoader.style.display = 'none';
     btnIcon.style.display = '';
     updateGenerateButton();
@@ -495,7 +557,8 @@ function escapeHtml(text) {
 // ══════════════════════════════════════════════════
 function handleDownload() {
     if (!state.generatedBlob) return;
-    const filename = `${state.sourceFileName}_traduit.docx`;
+    const ext = state.fileType || 'docx';
+    const filename = `${state.sourceFileName}_traduit.${ext}`;
     saveAs(state.generatedBlob, filename);
 }
 
