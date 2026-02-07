@@ -7,10 +7,10 @@
 (function () {
     var TOKEN_KEY = 'fw_access_granted';
 
-    // Obfuscated password: reversed base64 of the access code
-    var _k = 'ITYyMDItc2l0YWlzYUA=';
+    // Obfuscated password: base64-encoded access code
+    var _k = 'QGFzaWF0aXMtMjAyNiE=';
     function _d(s) {
-        return atob(s.split('').reverse().join(''));
+        return atob(s);
     }
 
     // Check if already authenticated
